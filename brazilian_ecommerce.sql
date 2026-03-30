@@ -264,6 +264,8 @@ CREATE TABLE geolocation AS
 	FROM geolocation_draft
 	GROUP BY (zip_code_prefix, city, state);
 
+DROP TABLE geolocation_draft;
+
 SELECT * FROM geolocation; -- rows have reduced from 1000163 to 19571
 
 SELECT COUNT(*) = COUNT(DISTINCT(zip_code_prefix, city, state))
@@ -271,7 +273,6 @@ FROM geolocation; -- validity of primary key using these three attributes
 
 ALTER TABLE geolocation
 ADD CONSTRAINT geo_pk PRIMARY KEY(zip_code_prefix, city, state);
-
 
 
 CREATE TABLE customers_draft (
@@ -458,7 +459,7 @@ CREATE TABLE order_items_draft (
 	order_item_id BIGINT,
 	product_id TEXT,
 	seller_id TEXT,
-	shipping_limit_date DATE,
+	shipping_limit_date TIMESTAMP,
 	price DECIMAL(50, 2),
 	freight_value DECIMAL(25, 2)
 );
@@ -485,6 +486,9 @@ CREATE TABLE order_payments_draft (
 );
 
 SELECT * FROM order_payments_draft;
+
+SELECT DISTINCT payment_type
+FROM order_payments_draft;
 
 SELECT COUNT(*) AS row_count, COUNT(DISTINCT order_id) AS distinct_order_id
 FROM order_payments_draft; -- not same, suggesting need for additional/alternative columns
@@ -535,6 +539,10 @@ CREATE TABLE orders_draft (
 
 SELECT * FROM orders_draft;
 
+SELECT DISTINCT(order_status)
+FROM orders_draft
+ORDER BY order_status;
+
 SELECT COUNT(*) AS row_count, COUNT(DISTINCT order_id) AS unique_order
 FROM orders_draft; -- equivalence, suggesting viability as a primary key
 
@@ -548,8 +556,8 @@ SELECT * FROM orders;
 CREATE TABLE products_draft (
 	product_id TEXT,
 	product_category_name TEXT,
-	product_name_lenght BIGINT,
-	product_description_lenght BIGINT,
+	product_name_length BIGINT,
+	product_description_length BIGINT,
 	product_photos_qty BIGINT,
 	product_weight_g BIGINT,
 	product_length_cm BIGINT,
@@ -558,6 +566,10 @@ CREATE TABLE products_draft (
 );
 
 SELECT * FROM products_draft;
+
+SELECT DISTINCT product_category_name
+FROM products_draft
+ORDER BY product_category_name;
 
 SELECT COUNT(*) AS row_count, COUNT(DISTINCT product_id) AS unique_product_id
 FROM products_draft; -- equivalent counts, suggesting viability as a primary key
@@ -589,19 +601,143 @@ ADD CONSTRAINT sellers_pk PRIMARY KEY(seller_id);
 SELECT * FROM sellers;
 
 CREATE TABLE product_category_name_translation_draft (
-	product_category_name TEXT,
-	product_category_name_english TEXT
+	category_name TEXT,
+	category_name_en TEXT
 );
 
 SELECT * FROM product_category_name_translation_draft;
 
-SELECT COUNT(*) AS row_count, COUNT(DISTINCT product_category_name) AS unique_prod_cat_name
+SELECT COUNT(*) AS row_count, COUNT(DISTINCT category_name) AS unique_prod_cat_name
 FROM product_category_name_translation_draft; -- both of same count, validating primary key viability
 
 ALTER TABLE product_category_name_translation_draft RENAME TO product_category_name_translation;
 
 ALTER TABLE product_category_name_translation
-ADD CONSTRAINT prod_cat_name_pk PRIMARY KEY(product_category_name);
+ADD CONSTRAINT prod_cat_name_pk PRIMARY KEY(category_name);
 
 SELECT * FROM product_category_name_translation;
 
+
+-- -- -- -- --
+
+ALTER TABLE customers
+ADD FOREIGN KEY(zip_code_prefix, city, state)
+REFERENCES geolocation(zip_code_prefix, city, state)
+ON DELETE RESTRICT;
+
+ALTER TABLE order_items
+ADD FOREIGN KEY(order_id)
+REFERENCES orders(order_id)
+ON DELETE CASCADE;
+ALTER TABLE order_items
+ADD FOREIGN KEY(product_id)
+REFERENCES products(product_id)
+ON DELETE RESTRICT;
+ALTER TABLE order_items
+ADD FOREIGN KEY(seller_id)
+REFERENCES sellers(seller_id)
+ON DELETE RESTRICT;
+
+ALTER TABLE order_payments
+ADD FOREIGN KEY(order_id)
+REFERENCES orders(order_id)
+ON DELETE CASCADE;
+
+ALTER TABLE order_reviews
+ADD FOREIGN KEY(order_id)
+REFERENCES orders(order_id)
+ON DELETE CASCADE;
+
+ALTER TABLE orders
+ADD FOREIGN KEY(customer_id)
+REFERENCES customers(id)
+ON DELETE RESTRICT;
+
+ALTER TABLE products -- here this does not work due to missing values
+ADD FOREIGN KEY(product_category_name) -- this is addressed in the following few chunks
+REFERENCES product_category_name_translation(category_name)
+ON DELETE RESTRICT;
+
+SELECT DISTINCT * 
+FROM products
+ORDER BY product_category_name;
+
+SELECT DISTINCT * 
+FROM product_category_name_translation
+ORDER BY category_name;
+
+SELECT DISTINCT p.product_category_name AS products_output, pcn.category_name AS products_category_name_output
+FROM products p
+LEFT JOIN product_category_name_translation pcn
+ON p.product_category_name = pcn.category_name
+WHERE pcn.category_name IS NULL;
+
+INSERT INTO product_category_name_translation
+VALUES ('pc_gamer', 'pc_gamer'),
+	   ('portateis_cozinha_e_preparadores_de_alimentos', 'kitchen_appliances_and_food_preparers');
+
+ALTER TABLE products
+ADD FOREIGN KEY(product_category_name)
+REFERENCES product_category_name_translation(category_name)
+ON DELETE RESTRICT; -- this runs, now foreign key is established here
+
+ALTER TABLE sellers
+ADD FOREIGN KEY(seller_zip_code_prefix, seller_city, seller_state)
+REFERENCES geolocation(zip_code_prefix, city, state)
+ON DELETE RESTRICT; -- this foreign key cannot be established due to missing values
+-- this will be addressed similarly to the customers table having values in it not present in the geolocation table
+
+SELECT DISTINCT seller_zip_code_prefix, seller_city, seller_state
+FROM sellers
+WHERE (seller_zip_code_prefix, seller_city, seller_state) NOT IN (SELECT DISTINCT zip_code_prefix, city, state FROM geolocation);
+
+CREATE TEMP TABLE sellers_location AS
+	SELECT DISTINCT s.seller_zip_code_prefix, s.seller_city, s.seller_state, 
+	CASE
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix AND g.city = s.seller_city AND g.state = s.seller_state)
+	    	THEN g.lat
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.city = s.seller_city AND g.state = s.seller_state)
+	    	THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lat) AS median_lat FROM geolocation g WHERE s.seller_city = g.city AND s.seller_state = g.state)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix AND g.state = s.seller_state)
+  		  	THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lat) AS median_lat FROM geolocation g WHERE s.seller_zip_code_prefix = g.zip_code_prefix AND s.seller_state = g.state)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix AND g.city = s.seller_city)
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lat) AS median_lat FROM geolocation g WHERE s.seller_zip_code_prefix = g.zip_code_prefix AND s.seller_city = g.city)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix) 
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lat) AS median_lat FROM geolocation g WHERE s.seller_zip_code_prefix = g.zip_code_prefix)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.city = s.seller_city)
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lat) AS median_lat FROM geolocation g WHERE s.seller_city = g.city)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.state = s.seller_state)
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lat) AS median_lat FROM geolocation g WHERE s.seller_state = g.state)
+		ELSE NULL
+	END AS lat,
+	CASE
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix AND g.city = s.seller_city AND g.state = s.seller_state)
+	    	THEN g.lng
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.city = s.seller_city AND g.state = s.seller_state)
+	    	THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lng) AS median_lng FROM geolocation g WHERE s.seller_city = g.city AND s.seller_state = g.state)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix AND g.state = s.seller_state)
+   		 	THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lng) AS median_lng FROM geolocation g WHERE s.seller_zip_code_prefix = g.zip_code_prefix AND s.seller_state = g.state)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix AND g.city = s.seller_city)
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lng) AS median_lng FROM geolocation g WHERE s.seller_zip_code_prefix = g.zip_code_prefix AND s.seller_city = g.city)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.zip_code_prefix = s.seller_zip_code_prefix) 
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lng) AS median_lng FROM geolocation g WHERE s.seller_zip_code_prefix = g.zip_code_prefix)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.city = s.seller_city)
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lng) AS median_lng FROM geolocation g WHERE s.seller_city = g.city)
+		WHEN EXISTS (SELECT 1 FROM geolocation g WHERE g.state = s.seller_state)
+    		THEN (SELECT PERCENTILE_CONT(0.5) WITHIN GROUP(ORDER BY lng) AS median_lng FROM geolocation g WHERE s.seller_state = g.state)
+		ELSE NULL
+	END AS lng
+	FROM sellers s
+	LEFT JOIN geolocation g ON g.zip_code_prefix = s.seller_zip_code_prefix AND g.city = s.seller_city AND g.state = s.seller_state
+	WHERE (s.seller_zip_code_prefix, s.seller_city, s.seller_state) NOT IN (SELECT zip_code_prefix, city, state FROM geolocation);
+
+INSERT INTO geolocation (zip_code_prefix, city, state, lat, lng, origin)
+SELECT seller_zip_code_prefix, seller_city, seller_state, lat, lng, 'synthetic'
+FROM sellers_location;
+
+DROP TABLE sellers_location;
+
+ALTER TABLE sellers
+ADD FOREIGN KEY(seller_zip_code_prefix, seller_city, seller_state)
+REFERENCES geolocation(zip_code_prefix, city, state)
+ON DELETE RESTRICT; -- this now runs!
