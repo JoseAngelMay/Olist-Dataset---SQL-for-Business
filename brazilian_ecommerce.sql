@@ -741,3 +741,31 @@ ALTER TABLE sellers
 ADD FOREIGN KEY(seller_zip_code_prefix, seller_city, seller_state)
 REFERENCES geolocation(zip_code_prefix, city, state)
 ON DELETE RESTRICT; -- this now runs!
+
+SELECT COUNT(*) FROM orders;
+
+SELECT DISTINCT order_status
+FROM orders
+ORDER BY order_status;
+
+SELECT order_status,
+       COUNT(*) FILTER (WHERE order_purchase_timestamp IS NULL) AS purchase_null,
+	   COUNT(*) FILTER (WHERE order_approved_at IS NULL) AS approved_null,
+	   COUNT(*) FILTER (WHERE order_delivered_carrier_date IS NULL) AS delivered_carrier_null,
+	   COUNT(*) FILTER (WHERE order_delivered_customer_date IS NULL) AS delivered_customer_null,
+	   COUNT(*) FILTER (WHERE order_estimated_delivery_date IS NULL) AS estimated_null
+FROM orders
+GROUP BY order_status;
+
+ALTER TABLE orders
+ADD COLUMN oddity TEXT;
+
+UPDATE orders
+SET oddity =
+CASE
+	WHEN (order_status = 'delivered') AND ((order_approved_at IS NULL) OR (order_delivered_carrier_date IS NULL) OR (order_delivered_customer_date IS NULL)) THEN 'concerning' 
+	ELSE 'unconcerning'
+END;
+
+SELECT * FROM orders
+WHERE oddity = 'concerning';
