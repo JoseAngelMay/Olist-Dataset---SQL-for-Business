@@ -27,3 +27,6 @@ There were several types of issues with the tables, including inconsistent names
 - median values where missing or where there where duplicates, using foreign tables when necessary
 - temporary tables in case of mass imputation
 - constraints, including NOT NULL and UNIQUE, to ensure foreign key validity
+
+## Tableau
+Link to Tableau visuals are in the https://public.tableau.com/app/profile/jose.hernandez3784/viz/CategorySalesByMonthOlist/Sheet1#1 link.
